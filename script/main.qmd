@@ -1,0 +1,123 @@
+# Entire Workflow
+
+OPTIONAL: Use this script instead of running through each R script at a time. To do so, you must execute one cell at a time (must wait for that whole process/tmux session to complete before moving to next). Alternative is to run each numbered script in script/R one by one.
+
+PRE-REQUISITE FOR USE: Install tmux (<https://github.com/tmux/tmux/wiki/Installing>)
+
+Set working directory as the path of the main evolutionary-rescue folder
+
+```{R}
+setwd("~/ER")
+
+my_dir <- getwd()
+```
+
+01: Generate many habitat loss scenarios to choose from later
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 01_samples 'cd ", my_dir, " && Rscript script/R/01_HLGeneration.R'")
+
+# Execute the command
+system(run_script)
+```
+
+02: Use density weighted sampling to select a subset of habitat loss scenarios for main simulations.
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 02_sampleSelection 'cd ", my_dir, " && Rscript script/R/02_HLSelection.R'")
+
+# Execute the command
+system(run_script)
+```
+
+03: Spinup main simulations (allow populations to locally adapt to environmental landscape)
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 03_spinup 'cd ", my_dir, " && Rscript script/R/03_MainSpinup.R'")
+
+# Execute the command
+system(run_script)
+```
+
+04: Main simulations (impose habitat loss and environmental change, record outcomes of replicate populations).
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 04_normal 'cd ", my_dir, " && Rscript script/R/04_MainNormal.R'")
+
+# Execute the command
+system(run_script)
+```
+
+05: Use density weighted sampling to choose habitat loss scenarios for interaction simulations
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 05_interaction 'cd ", my_dir, " && Rscript script/R/05_HLSelection_Interaction.R'")
+
+# Execute the command
+system(run_script)
+```
+
+06: Interaction simulations (impose habitat loss and environmental change, record outcomes of replicate populations).
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 06_interaction 'cd ", my_dir, " && Rscript script/R/06_InteractionNormal.R'")
+
+# Execute the command
+system(run_script)
+```
+
+07: Local sensitivity analysis simulations (impose habitat loss and environmental change, record outcomes of replicate populations).
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 07_localSA 'cd ", my_dir, " && Rscript script/R/07_LocalSANormal.R'")
+
+# Execute the command
+system(run_script)
+```
+
+08: Global sensitivity analysis spinup (allow populations to locally adapt to environmental landscape).
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 08_globalSA 'cd ", my_dir, " && Rscript script/R/08_GlobalSASpinup.R'")
+
+# Execute the command
+system(run_script)
+```
+
+09: Global sensitivity analysis simulations (impose habitat loss and environmental change, record outcomes of replicate populations).
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 09_globalSA 'cd ", my_dir, " && Rscript script/R/09_GlobalSANormal.R'")
+
+# Execute the command
+system(run_script)
+```
+
+10: Statistical models to summarise simulation outputs.
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 10_stats 'cd ", my_dir, " && Rscript script/R/10_brmsModels.R'")
+
+# Execute the command
+system(run_script)
+```
+
+11: Plot results
+
+```{R}
+# Define the Bash command
+run_script <- paste0("tmux new-session -d -s 11_figures 'cd ", my_dir, " && Rscript script/R/11_figures.R'")
+
+# Execute the command
+system(run_script)
+```

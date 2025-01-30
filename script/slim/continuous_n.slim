@@ -1,0 +1,517 @@
+// #################################################################################
+/** INITIALIZATION AND PARAMETER SETTING */
+// #################################################################################
+
+initialize() {
+	// parameters in script call
+	//defineConstant("envSeed", 1);
+	//defineConstant("slimSeed", 1);
+	//defineConstant("hlSeed", 14738);
+	//defineConstant("hlAclen", 0.1);
+	//defineConstant("CURRENT_DIRECTORY", "/home/teaganbaiotto/Documents/ER");
+	//defineConstant("SPINUP_SUFFIX", "");
+	//defineConstant("OUTPUT_SUFFIX", "interactions");
+	//defineConstant("delta_env", 3.0);
+	//defineConstant("sigma_p", 0.1);
+	//defineConstant("lambda_o", 0.25);
+	//defineConstant("sigma_fitness", 0.25);
+	//defineConstant("sigma_qtl", 0.1);
+	//defineConstant("carrying_cap", 1000);
+	//defineConstant("ENV_ACLEN", 0.1);
+	//defineConstant("p_QTL", 0.05);
+	//defineConstant("PROPORTION_LOSS", 0.667);
+	//defineConstant("HLDim", 512);
+	
+	
+	// parameters in call to run slim
+	defineConstant("ENV_SEED", asInteger(envSeed));
+	defineConstant("ENV_AMP", 1.0);
+	defineConstant("ENV_ACLEN", asFloat(envAcLen));
+	defineConstant("HL_SEED", asInteger(hlSeed));
+	defineConstant("HL_AMP", 1.0);
+	defineConstant("HL_ACLEN", asFloat(hlAclen));
+	defineConstant("SLiM_SEED", asInteger(slimSeed));
+	defineConstant("DELTA_ENV", asFloat(delta_env));
+	defineConstant("SIGMA_P", asFloat(sigma_p)); // PERCEPTION DISTANCE lower value makes competition much stronger at very local scale, high value is at more global scale, prefers "clustering" of individuals
+	defineConstant("LAMBDA_O", asFloat(lambda_o)); // mean number of offspring per mating event
+	defineConstant("SIGMA_FITNESS", asFloat(sigma_fitness)); // standard deviation of gaussian function that does phenotype-environment fitness mapping
+	defineConstant("SIGMA_QTL", asFloat(sigma_qtl));			// standard deviation of mutational effect size - for trait 1
+	defineConstant("K", asInteger(carrying_cap));
+	defineConstant("p_QTL", asFloat(pQTL));
+	defineConstant("PROPORTION_LOSS", asFloat(pHL));
+	defineConstant("HL_minSize", asInteger(HLDim));
+	
+	
+	setSeed(SLiM_SEED);
+	
+	
+	initializeSLiMModelType("nonWF");
+	
+	initializeSLiMOptions(dimensionality="xy", periodicity="xy");
+	
+	// Genomic element params
+	defineConstant("C_num", 20);							// number of chromosomes
+	defineConstant("C_lengths", rep(50000, C_num));	// lengths for each chromosome
+	
+	defineConstant("MU_base", 0);						// base mutation rate overall
+	defineConstant("MU", MU_base * p_QTL);	// mut rate for QTNs specifically
+	defineConstant("R", 1e-6);	// recombination rate
+	
+	initializeMutationRate(MU);
+	initializeMutationType("m1", 0.5, "f", 0);   // QTL
+	m1.convertToSubstitution = F;
+	
+	initializeGenomicElementType("g1", m1, 1.0);
+	initializeGenomicElement(g1, 0, sum(C_lengths[0:asInteger((C_num/2 - 1))]));
+	
+	rates = c(rep(c(R, 0.5), C_num-1), R);
+	ends = repEach(cumSum(C_lengths), 2);
+	ends = ends[0:(length(ends) - 2)];
+	ends = ends + c(rep(c(0,1), C_num-1), 0);
+	initializeRecombinationRate(rates, ends);
+	
+	
+	// Length of simulation
+	defineConstant("BURN_1", 5000); // length of first burn in
+	defineConstant("BURN_2", 5000); // length of second burn in
+	defineConstant("SIM_LEN", 200); // length of final sim
+	
+	// trait Variance
+	defineConstant("SIGMA_K_1", 0.99);						// smaller is stronger stabilizing selection, // larger is weaker (wider) stabilizing selection for trait 1
+	defineConstant("SIGMA_STAT", 4.0);					// burn-in stabilizing selection function variance
+	
+	// QTL-related constants used below
+	defineConstant("QTL_mu", 0); // mean of zero
+	
+	// Use Tree Seq -> for faster sims
+	initializeTreeSeq();
+	
+	// environmental preference - offset from mean in landscape
+	defineConstant("ENV_OFFSET", 0.0); //must be type FLOAT
+	
+	// Landscape Parameters
+	defineConstant("PERIODIC_X", T);
+	
+	// environmental change
+	defineConstant("DELTA_LEN", 100);
+	
+	// interactions
+	// based on Haller et al. 2013 (https://doi.org/10.1086/671907)
+	initializeInteractionType(1, "xy", reciprocal=T, maxDistance=SIGMA_P * 3);     // competition
+	i1.setInteractionFunction("n", 1.0, SIGMA_P);
+	
+	initializeInteractionType(2, "xy", reciprocal=T, maxDistance=SIGMA_P * 3);     // mate choice
+	i2.setInteractionFunction("f", 1.0);
+	
+	// output files
+	defineConstant('OUT_FILE', paste0(CURRENT_DIRECTORY, '/outputs/spatial/spinup_files/', asString(ENV_SEED), "_", asString(SLiM_SEED), '_', SPINUP_SUFFIX, 'populations.txt'));
+	defineConstant('MUT_FILE', paste0(CURRENT_DIRECTORY, '/outputs/spatial/spinup_files/', asString(ENV_SEED), "_", asString(SLiM_SEED), '_', SPINUP_SUFFIX, 'muts.txt'));
+	defineConstant('SIM_OUTPUT_FILE', paste0(CURRENT_DIRECTORY, '/outputs/spatial/simulation_output/ENV', asString(ENV_SEED),  '_out_summary', OUTPUT_SUFFIX,'.txt'));
+}
+
+///
+// #################################################################################
+/**  REPRODUCTION AND MUTATION EFFECT CALLBACKS */
+// #################################################################################
+reproduction(NULL) {
+	mate = i2.nearestInteractingNeighbors(individual);
+	if (!mate.size())
+		return;
+	mate = sample(mate, 1);
+	
+	for (i in seqLen(rpois(1, LAMBDA_O)))
+	{
+		pos = individual.spatialPosition;
+		offspring = subpop.addCrossed(individual, mate);
+		offspring.setSpatialPosition(p1.pointPeriodic(pos));
+		
+		if (sim.cycle >= (BURN_1 + BURN_2 + 1)){
+			// set unique ID to track individual
+			offspring.tag = sim.tag;
+			sim.tag = sim.tag + 1;
+		}
+	}
+}
+
+mutationEffect(m1)
+{
+	return 1.0; // Since we are using QTL model
+}
+
+mutation(m1) {
+	// draw mutational effects for the new m1 mutation
+	fit_effects = rnorm(1, QTL_mu, SIGMA_QTL);
+	mut.setValue("e1", fit_effects);
+	return T;
+}
+
+///
+// #################################################################################
+/**  ADD POPULATIONS AND LANDSCAPE */
+// #################################################################################
+
+1 early() {
+	// when to cause habitat destruction
+	community.rescheduleScriptBlock(s1, start=(BURN_1 + BURN_2 + 1), end=(BURN_1 + BURN_2 + 1));
+	
+	// when to start movement tracking
+	community.rescheduleScriptBlock(s2, start=(BURN_1 + BURN_2 + 1), end=(BURN_1 + BURN_2 + 1));
+	
+	// when climate change
+	community.rescheduleScriptBlock(s3, start=(BURN_1 + BURN_2 + 1), end=(BURN_1 + BURN_2 + DELTA_LEN));
+	
+	// end tick
+	community.rescheduleScriptBlock(s4, start=(BURN_1 + BURN_2 + SIM_LEN), end=(BURN_1 + BURN_2 + SIM_LEN));
+	
+	// load population
+	sim.readFromPopulationFile(OUT_FILE);
+	
+	// assign mutation effect sizes stored in external file
+	for (i in 0:(length(sim.mutations)-1)) {
+		sim.mutations[i].setValue("e0", 0.0);
+		sim.mutations[i].setValue("e1", asFloat(strsplit(readFile(MUT_FILE)))[i]);
+	}
+	
+	
+	// Generate an autocorrelated landscape map
+	m = generateLandscape(seed = ENV_SEED, slope=0.0, curvature=0.0, amplitude=ENV_AMP, aclength=ENV_ACLEN, periodic_x=PERIODIC_X);
+	
+	m = m - ENV_OFFSET;                // center to have a mean of 0
+	sim.setValue("m", m);  				  // save in memory for use later
+	
+	
+	// assign map as environment for simulation
+	p1.defineSpatialMap("ENV", "xy", m, interpolate=F,
+		valueRange=c((-3 - ENV_OFFSET), (3 - ENV_OFFSET)), colors=c("blue", "yellow"));
+	
+	// assign dummy map for HL
+	p1.defineSpatialMap("HL", "xy", matrix(rep(1, 4), nrow=2), interpolate=F,
+		valueRange=c(0, 1), colors=c("red", "green"));
+}
+
+
+///
+// #################################################################################
+/**  PHENOTYPE/FITNESS CALCULATION */
+// #################################################################################
+
+// Get parameters of beta distribution for this organism
+1 early() {
+	// get max possible fitness value according to distribution
+	defineConstant("FITNESS_MAX", dnorm(0.0, 0, SIGMA_FITNESS));
+}
+
+// HABITAT LOSS, LANDSCAPE CREATION
+s1 10 early() {
+	// Generate habitat loss map
+	m = generateHL(seed = HL_SEED, slope=0.0, curvature=0.0, amplitude=HL_AMP, aclength=HL_ACLEN, minSize = HL_minSize, periodic_x=PERIODIC_X, proportion_loss=PROPORTION_LOSS);
+	
+	sim.setValue("HL", m);  				  // save in memory for use later
+	
+	// assign map as environment for simulation
+	p1.defineSpatialMap("HL", "xy", m, interpolate=F,
+		valueRange=c(0, 1), colors=c("red", "green"));
+	
+	// also, let's save the initial population size
+	sim.setValue("initial_Pop_Size",length( sim.subpopulations.individuals));
+}
+
+// Movement tracking setup
+s2 10 first() {
+	sim.subpopulations.individuals.tag = 1:length(sim.subpopulations.individuals);
+	sim.tag = length(sim.subpopulations.individuals) + 1; // the next unique tag value to use
+	
+	sim.setValue("ind_Movement", DataFrame());
+	sim.setValue("ind_Movement_Number", DataFrame());
+}
+
+2: first() {
+	// AGING
+	// simple case here - if age > 10, kill
+	sim.killIndividuals(p1.individuals[p1.individuals.age>10]);
+	
+	// HABITAT LOSS
+	if (sim.cycle >= (BURN_1 + BURN_2)) {
+		landscape_effect = p1.spatialMapValue("HL", p1.individuals.spatialPosition);
+		
+		sim.killIndividuals(p1.individuals[landscape_effect==0]);
+	}
+}
+
+1: early() { // fitness calculations and habitat choice
+	inds = p1.individuals;
+	
+	if (length(inds) > 0)
+	{
+		// #################	
+		// CURRENT POSITION
+		// #################	
+		sim.setValue('oldPos', sim.subpopulations.individuals.spatialPosition);
+		// COMPETITION
+		// competition based on local density - make sure this is right
+		i1.evaluate(p1);
+		competition = i1.totalOfNeighborStrengths(inds);
+		competition = (competition + 1) / (2 * PI * SIGMA_P^2);
+		sim.setValue('ind_fits_oldPos', K/competition);// add in effect of competition/density dependence on fitness - double check this
+		
+		// PHENOTYPE-ENVIRONMENT MATCHING
+		for (ind in inds)
+		{
+			// construct phenotypes from additive effects of QTL mutations
+			muts = ind.genomes.mutationsOfType(m1);
+			ind.setValue("phenotype", size(muts) ? sum(muts.getValue("e1")) else 0.0);
+		}
+		
+		// get environmental condition from map
+		envs = p1.spatialMapValue("ENV", inds.spatialPosition);
+		
+		// get phenotype
+		phenotypes = inds.getValue("phenotype");
+		
+		// get fitness of each individual
+		fits = getFits(phenotypes, envs);
+		
+		sim.setValue('ind_fits_oldPos', fits * sim.getValue('ind_fits_oldPos'));
+		
+		
+		// #################	
+		// NEW POSITION
+		// #################	
+		oldPos = sim.getValue('oldPos');
+		newPos = oldPos + runif(length(oldPos), -0.1, 0.1);
+		sim.setValue('newPos', newPos);
+		sim.subpopulations.individuals.setSpatialPosition(p1.pointPeriodic(newPos));
+		
+		// COMPETITION
+		// competition based on local density - make sure this is right
+		i1.unevaluate(); // reset evaluation so we can check new position
+		i1.evaluate(p1);
+		competition = i1.totalOfNeighborStrengths(inds);
+		competition = (competition + 1) / (2 * PI * SIGMA_P^2);
+		sim.setValue('ind_fits_newPos', K/competition);// add in effect of competition/density dependence on fitness - double check this
+		
+		// PHENOTYPE-ENVIRONMENT MATCHING
+		// get environmental condition from map
+		envs = p1.spatialMapValue("ENV", inds.spatialPosition);
+		
+		// get phenotype
+		phenotypes = inds.getValue("phenotype");
+		
+		// get fitness of each individual
+		fits = getFits(phenotypes, envs);
+		
+		sim.setValue('ind_fits_newPos', fits * sim.getValue('ind_fits_newPos'));
+		
+		
+		// #################	
+		// HABITAT CHOICE (CHOOSE OLD/NEW POSITION)
+		// #################	
+		oldPos = sim.getValue('oldPos');
+		newPos = sim.getValue('newPos');
+		
+		ind_fits_oldPos = sim.getValue('ind_fits_oldPos');
+		ind_fits_newPos = sim.getValue('ind_fits_newPos');
+		ind_fits = ind_fits_newPos; // set fit as at new position for convenience below
+		
+		// iterate over individuals
+		i = 0;
+		for (ind in p1.individuals){
+			
+			if (ind_fits_oldPos[i] > ind_fits_newPos[i]){
+				ind_fits[i] = ind_fits_oldPos[i]; // if old position was better, set fitness value for that location
+				ind.setSpatialPosition(oldPos[(2*i):(2*i+1)]); // move to old position if that was better
+			}
+			i = i + 1;
+		}
+		
+		// add distances to dictionary
+		if (sim.cycle > (BURN_1 + BURN_2 + 1)) {
+			// get movement distances		
+			distTemp = (newPos-oldPos)^2;
+			movedBool = ifelse(sim.subpopulations.individuals.spatialPosition==newPos, 1, 0);
+			movedTemp = movedBool*distTemp;
+			distPos = sqrt(movedTemp[seq(0, length(movedTemp)-1, by = 2)] + movedTemp[seq(1, length(movedTemp)-1, by = 2)]);
+			
+			// add to dictionary
+			ind_Movement = sim.getValue("ind_Movement");
+			ind_Movement_Number = sim.getValue("ind_Movement_Number");
+			i = 0;
+			for (ind in sim.subpopulations.individuals) {
+				dist = distPos[i];
+				if (match(asString(ind.tag), ind_Movement.allKeys)==-1) { // for distance of movements, if ind not in keys,
+					ind_Movement.setValue(asString(ind.tag), dist); // add to keys and set distance moved this generation as value
+					if(dist > 0) { // now number of movements
+						ind_Movement_Number.setValue(asString(ind.tag), 1);
+					} else ind_Movement_Number.setValue(asString(ind.tag), 0);
+				} else {
+					ind_Movement_dist = ind_Movement.getValue(asString(ind.tag)); // if ind already in keys
+					ind_Movement.setValue(asString(ind.tag), (ind_Movement_dist + dist)); // add distance to value
+					ind_Movement_num = ind_Movement_Number.getValue(asString(ind.tag)); // number of movements
+					if(dist > 0) ind_Movement_Number.setValue(asString(ind.tag), (1 + ind_Movement_num));
+				}
+				sim.setValue("ind_Movement", ind_Movement);
+				sim.setValue("ind_Movement_Number", ind_Movement_Number);
+				i = i + 1;
+			}
+		}
+		
+		
+		// #################	
+		// SET FITNESS
+		// #################	
+		// set fitness scaling
+		inds.fitnessScaling = ind_fits; // add fitness effect of phenotype-environment compatibility
+		
+		// color individuals based on their phenotype for y-cline related trait
+		inds.color = p1.spatialMapColor("ENV", phenotypes);
+	} else {
+		sim.simulationFinished();
+	}
+}
+
+
+2: first() {
+	i2.evaluate(p1);
+}
+
+// distance moved per capita: mean(ind_Movement.asMatrix()[0,])
+
+
+late() // end sim if no individuals left
+{
+	if (length(sim.subpopulations.individuals) == 0)
+	{
+		// calculate variables of interest
+		// per capita movement distance
+		ind_Movement = sim.getValue("ind_Movement");
+		ind_Movement_Number = sim.getValue("ind_Movement_Number");
+		print(ind_Movement.asMatrix());
+		
+		if (!fileExists(SIM_OUTPUT_FILE))
+		{
+			lines = paste0(c('ENV_SEED', ', ', 'HL_SEED', ', ', 'SLIM_SEED', ', ', 'end_tick', ', ', 'proportion_original_pop_size', ', ',  'phenotypic_variance', ', ', 'propotion_original_muts', ', ', 'avg_movement', ', ', 'avg_movement_num'));
+			writeFile(SIM_OUTPUT_FILE, lines, append=T);
+		}
+		
+		lines = paste0(c(ENV_SEED, ', ', HL_SEED, ', ', SLiM_SEED, ', ', sim.cycle, ', ', 0, ', ',  0, ', ', 0, ', ', mean(ind_Movement.asMatrix()[0,]), ', ', mean(ind_Movement_Number.asMatrix()[0,])));
+		writeFile(SIM_OUTPUT_FILE, lines, append=T);
+		
+		// stop at extinction
+		catn("Extinction in cycle " + sim.cycle + ".");
+		//		!writeFile(OUT_FILE, paste0(lines) , append=T);
+		sim.simulationFinished();
+	
+	}
+}
+
+// ENVIRONMENTAL CHANGE MECHANICS
+s3 late()
+{
+	// change over DELTA_LEN generations of severity DELTA_ENV
+	m = sim.getValue("m");
+	m = m + (DELTA_ENV/DELTA_LEN);
+	
+	sim.setValue("m", m);
+	
+	p1.defineSpatialMap("ENV", "xy", m, interpolate=T,
+		valueRange=c((-3 - ENV_OFFSET), (3 - ENV_OFFSET)), colors=c("blue", "yellow"));
+}
+
+
+// output all fixed mutations at end
+s4 10 late() // end sim
+{
+	// calculate variables of interest
+	// per capita movement distance
+	ind_Movement = sim.getValue("ind_Movement");
+	ind_Movement_Number = sim.getValue("ind_Movement_Number");
+	// proportional change in number of alleles in population
+	propotion_original_muts = length(sim.mutations)/length(strsplit(readFile(MUT_FILE)));
+	// change in population size
+	intial_Pop_Size = sim.getValue("initial_Pop_Size");
+	
+	if (!fileExists(SIM_OUTPUT_FILE))
+	{
+		lines = paste0(c('ENV_SEED', ', ', 'HL_SEED', ', ', 'SLIM_SEED', ', ', 'end_tick', ', ', 'proportion_original_pop_size', ', ',  'phenotypic_variance', ', ', 'propotion_original_muts', ', ', 'avg_movement', ', ', 'avg_movement_num'));
+		writeFile(SIM_OUTPUT_FILE, lines, append=T);
+	}
+	
+	lines = paste0(c(ENV_SEED, ', ', HL_SEED, ', ', SLiM_SEED, ', ', sim.cycle, ', ', length(sim.subpopulations.individuals)/intial_Pop_Size, ', ', var(sim.subpopulations.individuals.getValue("phenotype")), ', ', propotion_original_muts, ', ', mean(ind_Movement.asMatrix()[0,]), ', ', mean(ind_Movement_Number.asMatrix()[0,])));
+	
+	writeFile(SIM_OUTPUT_FILE, lines, append=T);
+	
+	//	!writeFile(OUT_FILE, paste0(lines) , append=T);
+	sim.simulationFinished();
+}
+
+
+
+
+
+
+
+
+
+///
+// #################################################################################
+/** DEFINE ADDITIONAL FUNCTIONS */
+// #################################################################################
+function (float)generateLandscape(i$ seed, f$ slope, f$ curvature, f$ amplitude, f$ aclength, [i$ minSize = 256], [l$ periodic_x = T])
+{
+	// generates spatially autocorellated landscape
+	// function from B.C. Haller, R. Mazzucco, U. Dieckmann. (2013). Evolutionary branching in complex landscapes. American Naturalist 182(4), E127–E141. https://doi.org/10.1086/671907
+	
+	code = 	"source('" + CURRENT_DIRECTORY + "/script/R/landscape_ac.R');" +
+		"m <- generateLandscape(" + seed + ", " + slope + ", " + curvature + ", "
+		+ amplitude + ", " + aclength + ", " + minSize + ", " + periodic_x + ");" +
+		"cat(as.vector(m));";
+	args = c("--vanilla", "-e", "\"" + code + "\"");
+	m = system("/usr/bin/Rscript", args);
+	//	m = system("/usr/local/bin/Rscript", args);
+	
+	if (size(m) == 0)
+		stop("An error occurred in landscape generation");
+	
+	m = asFloat(strsplit(m, " "));
+	l = asInteger(sqrt(size(m)));
+	m = matrix(m, nrow=l, ncol=l, byrow=F);
+	catn("// generated landscape is " + l + " x " + l);
+	catn("//    range [" + min(m) + ", " + max(m) + "]");
+	catn("//    sd " + sd(m));
+	return m;
+}
+
+function (float)generateHL(i$ seed, f$ slope, f$ curvature, f$ amplitude, f$ aclength, [i$ minSize = 256], [l$ periodic_x = T], [f$ proportion_loss=0.5])
+{
+	// generates spatially autocorellated landscape
+	// function from B.C. Haller, R. Mazzucco, U. Dieckmann. (2013). Evolutionary branching in complex landscapes. American Naturalist 182(4), E127–E141. https://doi.org/10.1086/671907
+	
+	code = 	"source('" + CURRENT_DIRECTORY + "/script/R/landscape_ac.R');" +
+		"m <- generateHL(" + seed + ", " + slope + ", " + curvature + ", "
+		+ amplitude + ", " + aclength + ", " + minSize + ", " + periodic_x + ", " + proportion_loss + ");" +
+		"cat(as.vector(m));";
+	args = c("--vanilla", "-e", "\"" + code + "\"");
+	m = system("/usr/bin/Rscript", args);
+	//	m = system("/usr/local/bin/Rscript", args);
+	
+	if (size(m) == 0)
+		stop("An error occurred in landscape generation");
+	
+	m = asFloat(strsplit(m, " "));
+	l = asInteger(sqrt(size(m)));
+	m = matrix(m, nrow=l, ncol=l, byrow=F);
+	return m;
+}
+
+function (float)getFits(f ind_phenotypes, f prefered_phenotypes)
+{
+	// Uses paramters defined in model (upper case)
+	// fitness effect - related to how well their phenotype matches their environment and is dictated by the organism-specific curve
+	fitness_burnin_variance = ifelse(sim.cycle < (BURN_1 + BURN_2), SIGMA_K_1 * ((sim.cycle - BURN_1) / (BURN_1)) + SIGMA_STAT * (1.0 - (sim.cycle - BURN_1) / (BURN_1)), SIGMA_K_1);
+	
+	// Here, we are getting the phenotype of an individual as the sum of QTLs, and then adding fitnessScaling object based on phenotype-environment matching (as defined by organism-specific curve)
+	scaled_phenotypes = ((asFloat(ind_phenotypes) - prefered_phenotypes)/sqrt(fitness_burnin_variance));
+	fits = dnorm(scaled_phenotypes, 0.0, SIGMA_FITNESS)/FITNESS_MAX; // phenotype to fitness
+	
+	return fits;
+}

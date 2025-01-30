@@ -1,0 +1,10 @@
+parameter,min,max
+sigma_p,0.025,0.10
+lambda_o,0.125,0.50
+sigma_f,0.125,0.50
+sigma_QTL,0.05,0.20
+K,250,1000
+l_e,0.05,0.20
+p_QTL,0.025,0.10
+delta_e,2.40,3.75
+p_hl,0.533,0.833
